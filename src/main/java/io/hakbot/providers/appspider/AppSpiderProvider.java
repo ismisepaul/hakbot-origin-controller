@@ -96,6 +96,12 @@ public class AppSpiderProvider extends BaseProvider implements AsynchronousProvi
         final String scanName = getScanName(decodedScanConfig);
         setJobProperty(job, "scanName", scanName);
 
+        // Check if modules are set to high
+        final boolean highSeverityModule = isModuleSetToHigh(decodedScanConfig);
+        if (!highSeverityModule){
+            updateState(job, State.FAILED, "Scan doesn't comply with best practice - Modules Not Set to High");
+        }
+
         // Submit the scan request
         final Result submitResult = soap.runScanXml(remoteInstance.getUsername(), remoteInstance.getPassword(), token, decodedScanConfig, null, null);
         if (!submitResult.isSuccess()) {
@@ -188,6 +194,39 @@ public class AppSpiderProvider extends BaseProvider implements AsynchronousProvi
             LOGGER.error("Error processing scan file: " + e.getMessage());
         }
         return scanName;
+    }
+
+    /*
+    Checks if the following modules are set to High
+    BBFCB66779ED4E7292C08F19E9BB45DF - secure & httpOnly
+    EBEE6CA2515F4FBEB8B7EC0197C5A74F - HSTS
+    8399FA8EDF5C41BC9D3CF85DC23DC26B - X-Content-Type-Options
+    3E2E60F7D0E04D8596918C2D1F639064 - X-Frame-Options
+    615D72F401BC447AB4A2139654BC9945 - X-XSS-Protection
+     */
+    private boolean isModuleSetToHigh(String decodedScanConfig) {
+        final XPathFactory xpathFactory = XPathFactory.newInstance();
+        final XPath xpath = xpathFactory.newXPath();
+        String[] moduleIds = {"BBFCB66779ED4E7292C08F19E9BB45DF","EBEE6CA2515F4FBEB8B7EC0197C5A74F",
+                "8399FA8EDF5C41BC9D3CF85DC23DC26B","3E2E60F7D0E04D8596918C2D1F639064",
+                "615D72F401BC447AB4A2139654BC9945"};
+
+        try {
+
+            for (String moduleId: moduleIds){
+                final InputSource source = new InputSource(new StringReader(decodedScanConfig));
+                String severity = xpath.evaluate("/ScanConfig/AttackPolicyConfig/AttackModulePolicyList/AttackModulePolicy[ModuleId/text() =\"" + moduleId + "\"]//Severity/text()", source);
+
+                if (!severity.equals("High")){
+                    LOGGER.warn("Severity set to " + severity + " for module " + moduleId);
+                    return false;
+                }
+            }
+
+        } catch (XPathExpressionException e) {
+            LOGGER.error("Error processing scan file: " + e.getMessage());
+        }
+        return true;
     }
 
     public Class<? extends Console> getConsoleClass() {
