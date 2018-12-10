@@ -30,7 +30,6 @@ import io.hakbot.providers.BaseProvider;
 import io.hakbot.providers.appspider.ws.NTOService;
 import io.hakbot.providers.appspider.ws.NTOServiceSoap;
 import io.hakbot.providers.appspider.ws.Result;
-import io.hakbot.providers.appspider.ws.SCANSTATUS2;
 import io.hakbot.util.JsonUtil;
 import org.apache.commons.io.IOUtils;
 import org.apache.http.HttpEntity;
@@ -40,14 +39,16 @@ import org.apache.http.client.fluent.Request;
 import org.apache.http.client.fluent.Response;
 import org.xml.sax.InputSource;
 import javax.json.JsonObject;
-import javax.xml.datatype.XMLGregorianCalendar;
 import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathExpressionException;
 import javax.xml.xpath.XPathFactory;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.StringReader;
 import java.util.Base64;
 import java.util.Map;
+import java.util.Properties;
 
 public class AppSpiderProvider extends BaseProvider implements AsynchronousProvider, ConsoleIdentifier {
 
@@ -97,13 +98,17 @@ public class AppSpiderProvider extends BaseProvider implements AsynchronousProvi
         setJobProperty(job, "scanName", scanName);
 
         // Check if modules are set to high
-        final boolean highSeverityModule = isModuleSetToHigh(decodedScanConfig);
-        if (!highSeverityModule){
-            updateState(job, State.FAILED, "Scan doesn't comply with best practice - Modules Not Set to High");
+        if (propertiesFileExists() == true) {
+            final boolean highSeverityModule = isModuleSetToCustomSeverity(decodedScanConfig);
+            if (!highSeverityModule) {
+                updateState(job, State.FAILED, "Scan doesn't comply with best practice - " +
+                        "Modules don't match severity set in appspider.properties file");
+            }
         }
 
         // Submit the scan request
-        final Result submitResult = soap.runScanXml(remoteInstance.getUsername(), remoteInstance.getPassword(), token, decodedScanConfig, null, null);
+        final Result submitResult = soap.runScanXml(remoteInstance.getUsername(), remoteInstance.getPassword(), token,
+                decodedScanConfig, null, null);
         if (!submitResult.isSuccess()) {
             updateState(job, State.FAILED, "Failed to execute AppSpider job", submitResult.getErrorDescription());
         }
@@ -196,28 +201,40 @@ public class AppSpiderProvider extends BaseProvider implements AsynchronousProvi
         return scanName;
     }
 
-    /*
-    Checks if the following modules are set to High
-    BBFCB66779ED4E7292C08F19E9BB45DF - secure & httpOnly
-    EBEE6CA2515F4FBEB8B7EC0197C5A74F - HSTS
-    8399FA8EDF5C41BC9D3CF85DC23DC26B - X-Content-Type-Options
-    3E2E60F7D0E04D8596918C2D1F639064 - X-Frame-Options
-    615D72F401BC447AB4A2139654BC9945 - X-XSS-Protection
-     */
-    private boolean isModuleSetToHigh(String decodedScanConfig) {
+    private boolean propertiesFileExists(){
+        File file = new File(AppSpiderConstants.APPSPIDER_PROPERTIES);
+        if(file.exists() && !file.isDirectory())
+            return true;
+        return false;
+    }
+
+    private Properties getAppSpiderModuleSeverity(){
+        Properties properties = new Properties();
+
+        try {
+            properties.load(new FileInputStream(AppSpiderConstants.APPSPIDER_PROPERTIES));
+        }
+        catch (IOException e) {}
+
+        return properties;
+    }
+
+    private boolean isModuleSetToCustomSeverity(String decodedScanConfig) {
+
+        Properties moduleIds = getAppSpiderModuleSeverity();
+
         final XPathFactory xpathFactory = XPathFactory.newInstance();
         final XPath xpath = xpathFactory.newXPath();
-        String[] moduleIds = {"BBFCB66779ED4E7292C08F19E9BB45DF","EBEE6CA2515F4FBEB8B7EC0197C5A74F",
-                "8399FA8EDF5C41BC9D3CF85DC23DC26B","3E2E60F7D0E04D8596918C2D1F639064",
-                "615D72F401BC447AB4A2139654BC9945"};
 
         try {
 
-            for (String moduleId: moduleIds){
+            for (String moduleId: moduleIds.stringPropertyNames()){
                 final InputSource source = new InputSource(new StringReader(decodedScanConfig));
-                String severity = xpath.evaluate("/ScanConfig/AttackPolicyConfig/AttackModulePolicyList/AttackModulePolicy[ModuleId/text() =\"" + moduleId + "\"]//Severity/text()", source);
+                String severity = xpath.evaluate(
+                        "/ScanConfig/AttackPolicyConfig/AttackModulePolicyList/AttackModulePolicy[ModuleId/text() =\""
+                                + moduleId + "\"]//Severity/text()", source);
 
-                if (!severity.equals("High")){
+                if (!severity.equals(moduleIds.getProperty(moduleId))){
                     LOGGER.warn("Severity set to " + severity + " for module " + moduleId);
                     return false;
                 }
